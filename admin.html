@@ -1,0 +1,710 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>酒店客房点单 · 管理端</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/antd@5/dist/reset.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/antd@5/dist/antd.min.css" />
+    <style>
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+          'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+        background: linear-gradient(135deg, #020617, #0f172a);
+      }
+      #root {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 12px 8px 24px;
+      }
+      @media (max-width: 768px) {
+        #root {
+          padding: 8px 4px 16px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+
+    <!-- Babel 编译 JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- dayjs（Ant Design 5 依赖） -->
+    <script src="https://cdn.jsdelivr.net/npm/dayjs@1/dayjs.min.js"></script>
+
+    <!-- Ant Design & Axios -->
+    <script src="https://cdn.jsdelivr.net/npm/antd@5/dist/antd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios@1.7.7/dist/axios.min.js"></script>
+
+    <script type="text/babel">
+      // 如果用户从未访问过首页，则先跳转到首页登录页
+      try {
+        const visited = localStorage.getItem('hasVisitedMain');
+        if (!visited) {
+          window.location.href = '/';
+        }
+      } catch (e) {
+        // 本地存储不可用时忽略
+      }
+
+      const {
+        ConfigProvider,
+        Layout,
+        Typography,
+        Card,
+        Input,
+        Button,
+        Tabs,
+        Table,
+        Tag,
+        Space,
+        message,
+        Popconfirm,
+        Switch,
+        Form,
+        Modal,
+        Row,
+        Col,
+        List
+      } = antd;
+
+      const API_BASE = `${window.location.protocol}//${window.location.host}`;
+
+      function AdminApp() {
+        const [authed, setAuthed] = React.useState(false);
+        const [adminUserId, setAdminUserId] = React.useState(null);
+        const [loginAccount, setLoginAccount] = React.useState('');
+        const [loginPassword, setLoginPassword] = React.useState('');
+        const [activeTab, setActiveTab] = React.useState('orders');
+
+        const [orders, setOrders] = React.useState([]);
+        const [ordersLoading, setOrdersLoading] = React.useState(false);
+        const [statusFilter, setStatusFilter] = React.useState('ALL');
+        const [orderDetailsModalOpen, setOrderDetailsModalOpen] = React.useState(false);
+        const [currentOrderDetails, setCurrentOrderDetails] = React.useState(null);
+        const [detailsLoading, setDetailsLoading] = React.useState(false);
+
+        const [items, setItems] = React.useState([]);
+        const [itemsLoading, setItemsLoading] = React.useState(false);
+        const [editingItem, setEditingItem] = React.useState(null);
+        const [itemModalOpen, setItemModalOpen] = React.useState(false);
+
+        const adminAxios = React.useMemo(() => {
+          const instance = axios.create({
+            baseURL: API_BASE,
+            headers: adminUserId ? { 'x-admin-user-id': adminUserId } : {}
+          });
+          return instance;
+        }, [adminUserId]);
+
+        const handleLogin = () => {
+          if (!loginAccount || !loginPassword) {
+            message.warning('请输入账号和密码');
+            return;
+          }
+          axios
+            .post(API_BASE + '/api/auth/login', {
+              email: loginAccount,
+              password: loginPassword,
+              loginType: 'password'
+            })
+            .then((res) => {
+              if (!res.data.is_admin) {
+                message.error('该账号不是管理员，请联系系统管理员设置');
+                return;
+              }
+              setAdminUserId(res.data.id);
+              setAuthed(true);
+              message.success('管理端登录成功');
+            })
+            .catch((e) => {
+              console.error(e);
+              const msg =
+                (e.response && e.response.data && e.response.data.message) ||
+                '登录失败，请检查账号和密码';
+              message.error(msg);
+            });
+        };
+
+        const loadOrders = (status = statusFilter) => {
+          if (!authed) return;
+          setOrdersLoading(true);
+          adminAxios
+            .get('/api/admin/orders', { params: { status } })
+            .then((res) => setOrders(res.data || []))
+            .catch((e) => {
+              console.error(e);
+              message.error('加载订单失败');
+            })
+            .finally(() => setOrdersLoading(false));
+        };
+
+        const viewOrderDetails = (orderId) => {
+          setDetailsLoading(true);
+          adminAxios
+            .get(`/api/admin/orders/${orderId}/details`)
+            .then((res) => {
+              setCurrentOrderDetails(res.data);
+              setOrderDetailsModalOpen(true);
+            })
+            .catch((e) => {
+              console.error(e);
+              message.error('加载订单详情失败');
+            })
+            .finally(() => setDetailsLoading(false));
+        };
+
+        const cycleOrderStatus = (record) => {
+          const statusFlow = ['PENDING', 'PREPARING', 'SENT', 'DELIVERED'];
+          const currentIndex = statusFlow.indexOf(record.status);
+          const nextIndex = (currentIndex + 1) % statusFlow.length;
+          const nextStatus = statusFlow[nextIndex];
+          updateOrderStatus(record, nextStatus);
+        };
+
+        const getCycleButtonConfig = (status) => {
+          const statusMap = {
+            PENDING: { text: '备货', color: 'default' },
+            PREPARING: { text: '送出', color: 'blue' },
+            SENT: { text: '送达', color: 'gold' },
+            DELIVERED: { text: '完成', color: 'green' }
+          };
+          return statusMap[status] || { text: '备货', color: 'default' };
+        };
+
+        const updateOrderStatus = (record, status) => {
+          adminAxios
+            .patch(`/api/admin/orders/${record.id}/status`, { status })
+            .then(() => {
+              message.success('状态已更新');
+              loadOrders();
+            })
+            .catch((e) => {
+              console.error(e);
+              message.error('更新状态失败');
+            });
+        };
+
+        const loadItems = () => {
+          if (!authed) return;
+          setItemsLoading(true);
+          adminAxios
+            .get('/api/admin/items')
+            .then((res) => setItems(res.data || []))
+            .catch((e) => {
+              console.error(e);
+              message.error('加载商品失败');
+            })
+            .finally(() => setItemsLoading(false));
+        };
+
+        const openNewItemModal = () => {
+          setEditingItem({ name: '', price: 0, category: '', description: '', available: 1 });
+          setItemModalOpen(true);
+        };
+
+        const openEditItemModal = (item) => {
+          setEditingItem({ ...item });
+          setItemModalOpen(true);
+        };
+
+        const saveItem = () => {
+          if (!editingItem.name || editingItem.price === undefined || !editingItem.category) {
+            message.warning('名称、价格和分类必填');
+            return;
+          }
+          const payload = {
+            name: editingItem.name,
+            price: Number(editingItem.price),
+            category: editingItem.category,
+            description: editingItem.description || null,
+            image_url: editingItem.image_url || null,
+            available: editingItem.available ? 1 : 0
+          };
+          const req = editingItem.id
+            ? adminAxios.put(`/api/admin/items/${editingItem.id}`, payload)
+            : adminAxios.post('/api/admin/items', payload);
+          req
+            .then(() => {
+              message.success('保存成功');
+              setItemModalOpen(false);
+              loadItems();
+            })
+            .catch((e) => {
+              console.error(e);
+              message.error('保存失败');
+            });
+        };
+
+        const deleteItem = (item) => {
+          adminAxios
+            .delete(`/api/admin/items/${item.id}`)
+            .then(() => {
+              message.success('已删除');
+              loadItems();
+            })
+            .catch((e) => {
+              console.error(e);
+              const msg =
+                (e.response && e.response.data && e.response.data.message) || '删除失败';
+              message.error(msg);
+            });
+        };
+
+        React.useEffect(() => {
+          if (!authed) return;
+          if (activeTab === 'orders') {
+            loadOrders('ALL');
+          } else if (activeTab === 'items') {
+            loadItems();
+          }
+        }, [authed, activeTab]);
+
+        const orderColumns = [
+          { title: '订单号', dataIndex: 'id', width: 70 },
+          { title: '房间号', dataIndex: 'room_number', width: 80 },
+          { title: '客人', dataIndex: 'guest_name', width: 100, ellipsis: true },
+          {
+            title: '金额',
+            dataIndex: 'total_price',
+            width: 80,
+            render: (v) => `￥${Number(v).toFixed(2)}`
+          },
+          {
+            title: '状态',
+            dataIndex: 'status',
+            width: 90,
+            render: (s) => {
+              const map = {
+                PENDING: { color: 'default', text: '待处理' },
+                PREPARING: { color: 'blue', text: '备货中' },
+                SENT: { color: 'gold', text: '已送出' },
+                DELIVERED: { color: 'green', text: '已送达' },
+                CANCELLED: { color: 'red', text: '已取消' }
+              };
+              const cfg = map[s] || { color: 'default', text: s };
+              return <Tag color={cfg.color}>{cfg.text}</Tag>;
+            }
+          },
+          { title: '备注', dataIndex: 'remark', ellipsis: true, responsive: ['lg'] },
+          { title: '时间', dataIndex: 'created_at', width: 160, ellipsis: true, responsive: ['xl'] },
+          {
+            title: '操作',
+            key: 'action',
+            width: 200,
+            fixed: 'right',
+            render: (_, record) => {
+              const btnConfig = getCycleButtonConfig(record.status);
+              return (
+                <Space size="small" wrap>
+                  <Button size="small" onClick={() => viewOrderDetails(record.id)}>
+                    详情
+                  </Button>
+                  <Button 
+                    size="small" 
+                    type={btnConfig.color === 'default' ? 'default' : 'primary'}
+                    color={btnConfig.color}
+                    onClick={() => cycleOrderStatus(record)}
+                  >
+                    {btnConfig.text}
+                  </Button>
+                  <Button danger size="small" onClick={() => updateOrderStatus(record, 'CANCELLED')}>
+                    取消
+                  </Button>
+                </Space>
+              );
+            }
+          }
+        ];
+
+        const itemColumns = [
+          { title: '名称', dataIndex: 'name', width: 120, ellipsis: true },
+          {
+            title: '价格',
+            dataIndex: 'price',
+            width: 80,
+            render: (v) => `￥${Number(v).toFixed(2)}`
+          },
+          { title: '分类', dataIndex: 'category', width: 100, ellipsis: true, responsive: ['md'] },
+          { title: '说明', dataIndex: 'description', ellipsis: true, responsive: ['lg'] },
+          {
+            title: '状态',
+            dataIndex: 'available',
+            width: 70,
+            render: (v) => <Tag color={v ? 'green' : 'red'}>{v ? '上架' : '下架'}</Tag>
+          },
+          {
+            title: '操作',
+            key: 'action',
+            width: 150,
+            fixed: 'right',
+            render: (_, record) => (
+              <Space size="small" wrap>
+                <Button size="small" onClick={() => openEditItemModal(record)}>
+                  编辑
+                </Button>
+                <Popconfirm
+                  title="确定删除该商品？"
+                  onConfirm={() => deleteItem(record)}
+                  okText="删除"
+                  cancelText="取消"
+                >
+                  <Button danger size="small">
+                    删除
+                  </Button>
+                </Popconfirm>
+              </Space>
+            )
+          }
+        ];
+
+        if (!authed) {
+          return (
+            <ConfigProvider
+              theme={{
+                token: { colorPrimary: '#1677ff', borderRadius: 8 }
+              }}
+            >
+              <Layout style={{ minHeight: '100vh', background: '#020617' }}>
+                <Layout.Content style={{ padding: '12px 8px' }}>
+                  <div id="root-inner" style={{ maxWidth: 420, margin: '80px auto' }}>
+                    <Card
+                      title="管理端登录"
+                      style={{
+                        borderRadius: 18,
+                        boxShadow: '0 18px 45px rgba(15,23,42,0.6)'
+                      }}
+                    >
+                      <Space direction="vertical" style={{ width: '100%' }} size="large">
+                        <Typography.Paragraph type="secondary">
+                          请输入管理员账号和密码进入后台。管理员账号在用户表 `users` 中配置，需将
+                          `is_admin` 设为 1。
+                        </Typography.Paragraph>
+                        <Input
+                          placeholder="邮箱或用户名"
+                          value={loginAccount}
+                          onChange={(e) => setLoginAccount(e.target.value)}
+                        />
+                        <Input.Password
+                          placeholder="密码"
+                          value={loginPassword}
+                          onChange={(e) => setLoginPassword(e.target.value)}
+                        />
+                        <Button type="primary" block onClick={handleLogin}>
+                          登录后台
+                        </Button>
+                      </Space>
+                    </Card>
+                  </div>
+                </Layout.Content>
+              </Layout>
+            </ConfigProvider>
+          );
+        }
+
+        return (
+          <ConfigProvider
+            theme={{
+              token: { colorPrimary: '#1677ff', borderRadius: 8 }
+            }}
+          >
+            <Layout style={{ minHeight: '100vh', background: 'transparent' }}>
+              <Layout.Content style={{ padding: '8px 0' }}>
+                <Typography.Title level={3} style={{ color: '#e5e7eb', marginBottom: 16, fontSize: '20px' }}>
+                  酒店客房点单 · 管理端
+                </Typography.Title>
+                <Card style={{ borderRadius: 18 }}>
+                  <Tabs
+                    activeKey={activeTab}
+                    onChange={(key) => setActiveTab(key)}
+                    items={[
+                      { key: 'orders', label: '订单管理' },
+                      { key: 'items', label: '商品管理' }
+                    ]}
+                  />
+                  {activeTab === 'orders' && (
+                    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                      <Space wrap size="small" style={{ marginBottom: 8 }}>
+                        <Typography.Text>状态筛选：</Typography.Text>
+                        <Button
+                          size="small"
+                          type={statusFilter === 'ALL' ? 'primary' : 'default'}
+                          onClick={() => {
+                            setStatusFilter('ALL');
+                            loadOrders('ALL');
+                          }}
+                        >
+                          全部
+                        </Button>
+                        <Button
+                          size="small"
+                          type={statusFilter === 'PENDING' ? 'primary' : 'default'}
+                          onClick={() => {
+                            setStatusFilter('PENDING');
+                            loadOrders('PENDING');
+                          }}
+                        >
+                          待处理
+                        </Button>
+                        <Button
+                          size="small"
+                          type={statusFilter === 'PREPARING' ? 'primary' : 'default'}
+                          onClick={() => {
+                            setStatusFilter('PREPARING');
+                            loadOrders('PREPARING');
+                          }}
+                        >
+                          备货中
+                        </Button>
+                        <Button
+                          size="small"
+                          type={statusFilter === 'SENT' ? 'primary' : 'default'}
+                          onClick={() => {
+                            setStatusFilter('SENT');
+                            loadOrders('SENT');
+                          }}
+                        >
+                          已送出
+                        </Button>
+                        <Button
+                          size="small"
+                          type={statusFilter === 'DELIVERED' ? 'primary' : 'default'}
+                          onClick={() => {
+                            setStatusFilter('DELIVERED');
+                            loadOrders('DELIVERED');
+                          }}
+                        >
+                          已送达
+                        </Button>
+                      </Space>
+                      <Table
+                        rowKey="id"
+                        dataSource={orders}
+                        columns={orderColumns}
+                        loading={ordersLoading}
+                        size="small"
+                        scroll={{ x: 'max-content' }}
+                      />
+                    </Space>
+                  )}
+                  {activeTab === 'items' && (
+                    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                      <Space wrap style={{ justifyContent: 'space-between', width: '100%', marginBottom: 8 }} size="small">
+                        <Typography.Text>管理客房商品</Typography.Text>
+                        <Button type="primary" size="small" onClick={openNewItemModal}>
+                          新增商品
+                        </Button>
+                      </Space>
+                      <Table
+                        rowKey="id"
+                        dataSource={items}
+                        columns={itemColumns}
+                        loading={itemsLoading}
+                        size="small"
+                        scroll={{ x: 'max-content' }}
+                      />
+                    </Space>
+                  )}
+                </Card>
+
+                <Modal
+                  title={editingItem && editingItem.id ? '编辑商品' : '新增商品'}
+                  open={itemModalOpen}
+                  onCancel={() => setItemModalOpen(false)}
+                  onOk={saveItem}
+                  okText="保存"
+                  cancelText="取消"
+                >
+                  {editingItem && (
+                    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                      <Input
+                        placeholder="名称"
+                        value={editingItem.name}
+                        onChange={(e) =>
+                          setEditingItem({ ...editingItem, name: e.target.value })
+                        }
+                      />
+                      <Input
+                        placeholder="价格"
+                        type="number"
+                        value={editingItem.price}
+                        onChange={(e) =>
+                          setEditingItem({ ...editingItem, price: e.target.value })
+                        }
+                      />
+                      <Input
+                        placeholder="分类（如：餐饮 / 客房服务）"
+                        value={editingItem.category}
+                        onChange={(e) =>
+                          setEditingItem({ ...editingItem, category: e.target.value })
+                        }
+                      />
+                      <Input.TextArea
+                        placeholder="描述"
+                        rows={2}
+                        value={editingItem.description || ''}
+                        onChange={(e) =>
+                          setEditingItem({ ...editingItem, description: e.target.value })
+                        }
+                      />
+                      <Input
+                        placeholder="图片 URL（可选）"
+                        value={editingItem.image_url || ''}
+                        onChange={(e) =>
+                          setEditingItem({ ...editingItem, image_url: e.target.value })
+                        }
+                      />
+                      <Space align="center">
+                        <Typography.Text>是否上架：</Typography.Text>
+                        <Switch
+                          checked={!!editingItem.available}
+                          onChange={(v) =>
+                            setEditingItem({ ...editingItem, available: v ? 1 : 0 })
+                          }
+                        />
+                      </Space>
+                    </Space>
+                  )}
+                </Modal>
+
+                <Modal
+                  title="订单详情"
+                  open={orderDetailsModalOpen}
+                  onCancel={() => setOrderDetailsModalOpen(false)}
+                  footer={[
+                    <Button key="close" onClick={() => setOrderDetailsModalOpen(false)}>
+                      关闭
+                    </Button>
+                  ]}
+                  width={700}
+                  style={{ top: 20 }}
+                >
+                  {detailsLoading ? (
+                    <div style={{ textAlign: 'center', padding: '40px 0' }}>
+                      <Typography.Text type="secondary">正在加载订单详情...</Typography.Text>
+                    </div>
+                  ) : currentOrderDetails ? (
+                    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                      {/* 订单基本信息 */}
+                      <Card size="small" style={{ background: '#f9fafb', borderRadius: 12 }}>
+                        <Space direction="vertical" style={{ width: '100%' }} size="small">
+                          <Row gutter={[12, 8]}>
+                            <Col xs={24} sm={8}>
+                              <Typography.Text type="secondary">订单号：</Typography.Text>
+                              <Typography.Text strong>#{currentOrderDetails.id}</Typography.Text>
+                            </Col>
+                            <Col xs={24} sm={8}>
+                              <Typography.Text type="secondary">房间号：</Typography.Text>
+                              <Tag color="blue">{currentOrderDetails.room_number}</Tag>
+                            </Col>
+                            <Col xs={24} sm={8}>
+                              <Typography.Text type="secondary">客人：</Typography.Text>
+                              <Typography.Text>{currentOrderDetails.guest_name || '-'}</Typography.Text>
+                            </Col>
+                          </Row>
+                          <Row gutter={[12, 8]}>
+                            <Col xs={24} sm={8}>
+                              <Typography.Text type="secondary">订单状态：</Typography.Text>
+                              <Tag color={
+                                currentOrderDetails.status === 'PENDING' ? 'gold' :
+                                currentOrderDetails.status === 'PREPARING' ? 'blue' :
+                                currentOrderDetails.status === 'SENT' ? 'orange' :
+                                currentOrderDetails.status === 'DELIVERED' ? 'green' : 'red'
+                              }>
+                                {
+                                  currentOrderDetails.status === 'PENDING' ? '待处理' :
+                                  currentOrderDetails.status === 'PREPARING' ? '备货中' :
+                                  currentOrderDetails.status === 'SENT' ? '已送出' :
+                                  currentOrderDetails.status === 'DELIVERED' ? '已送达' : '已取消'
+                                }
+                              </Tag>
+                            </Col>
+                            <Col xs={24} sm={8}>
+                              <Typography.Text type="secondary">订单金额：</Typography.Text>
+                              <Typography.Text strong style={{ color: '#ff4d4f', fontSize: 18 }}>
+                                ￥{Number(currentOrderDetails.total_price).toFixed(2)}
+                              </Typography.Text>
+                            </Col>
+                            <Col xs={24} sm={8}>
+                              <Typography.Text type="secondary">下单时间：</Typography.Text>
+                              <Typography.Text>{currentOrderDetails.created_at}</Typography.Text>
+                            </Col>
+                          </Row>
+                          {currentOrderDetails.remark && (
+                            <Row>
+                              <Col span={24}>
+                                <Typography.Text type="secondary">备注：</Typography.Text>
+                                <div style={{ marginTop: 4, padding: '8px 12px', background: '#fffbe6', borderRadius: 6, border: '1px solid #ffe58f' }}>
+                                  <Typography.Text>{currentOrderDetails.remark}</Typography.Text>
+                                </div>
+                              </Col>
+                            </Row>
+                          )}
+                        </Space>
+                      </Card>
+
+                      {/* 商品明细列表 */}
+                      <Card 
+                        size="small" 
+                        title="商品明细" 
+                        style={{ borderRadius: 12 }}
+                      >
+                        <List
+                          dataSource={currentOrderDetails.items || []}
+                          renderItem={(item) => (
+                            <List.Item>
+                              <List.Item.Meta
+                                title={
+                                  <Space>
+                                    <Typography.Text strong>{item.name}</Typography.Text>
+                                    {item.description && (
+                                      <Tag color="default" style={{ fontSize: 12 }}>
+                                        {item.description}
+                                      </Tag>
+                                    )}
+                                  </Space>
+                                }
+                                description={
+                                  <Space size="large" style={{ marginTop: 8 }}>
+                                    <span>
+                                      <Typography.Text type="secondary">单价：</Typography.Text>
+                                      <Typography.Text>￥{Number(item.unit_price).toFixed(2)}</Typography.Text>
+                                    </span>
+                                    <span>
+                                      <Typography.Text type="secondary">数量：</Typography.Text>
+                                      <Typography.Text strong>× {item.quantity}</Typography.Text>
+                                    </span>
+                                    <span>
+                                      <Typography.Text type="secondary">小计：</Typography.Text>
+                                      <Typography.Text strong style={{ color: '#ff4d4f' }}>
+                                        ￥{(Number(item.unit_price) * Number(item.quantity)).toFixed(2)}
+                                      </Typography.Text>
+                                    </span>
+                                  </Space>
+                                }
+                              />
+                            </List.Item>
+                          )}
+                        />
+                      </Card>
+                    </Space>
+                  ) : null}
+                </Modal>
+              </Layout.Content>
+            </Layout>
+          </ConfigProvider>
+        );
+      }
+
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(<AdminApp />);
+    </script>
+  </body>
+</html>
+
